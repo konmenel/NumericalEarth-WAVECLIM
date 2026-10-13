@@ -1,0 +1,10 @@
+[deps]
+ADTypes = "47edcb42-4c32-4615-8424-f2b9edc5f35b"
+AbstractGPs = "99985d1d-32ba-4be9-9821-2ec096f28918"
+CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+KernelFunctions = "ec8451be-7e33-11e9-00cf-bbf324bd1392"
+NumericalEarth = "904d977b-046a-4731-8b86-9235c0d1ef02"
+Oceananigans = "9e8cae18-63c1-5223-a75c-80ca9d6e9a09"
+Optim = "429524aa-4258-5aef-a3af-852621145aeb"
