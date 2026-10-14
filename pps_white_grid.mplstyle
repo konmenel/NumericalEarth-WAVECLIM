@@ -1,0 +1,61 @@
+# Axes settings
+axes.edgecolor:       black
+axes.titlepad:        12
+axes.labelcolor:      black
+axes.grid:            True
+axes.linewidth:       0.6
+axes.axisbelow:       True
+
+# Lines
+lines.linewidth:      1.25
+
+# Grid settings
+grid.color:           darkgrey
+grid.linewidth:       0.6
+
+# Minor grid
+# Only works with my fork of matplotlib for now
+axes.grid.which:      both
+xtick.minor.visible:  True
+ytick.minor.visible:  True
+grid.minor.linewidth: 0.4
+grid.minor.alpha:     0.4
+
+# Ticks settings
+xtick.color:          black
+xtick.direction:      in
+xtick.major.size:     5.0
+xtick.major.width:    0.6
+xtick.minor.size:     2.0
+xtick.minor.width:    0.5
+
+ytick.color:          black
+ytick.direction:      in
+ytick.major.size:     5.0
+ytick.major.width:    0.6
+ytick.minor.size:     2.0
+ytick.minor.width:    0.5
+
+# Legend settings
+legend.edgecolor:     black
+legend.frameon:       True
+legend.framealpha:    1.0
+legend.handlelength:  2.0
+legend.columnspacing: 1.0
+
+# Font settings
+mathtext.fontset:     cm
+font.family:          DejaVu Serif
+text.usetex:          false
+font.size:            9.0
+axes.titlesize:       11.0
+axes.labelsize:       9.0
+legend.fontsize:      9.0
+ytick.labelsize:      8.5
+xtick.labelsize:      8.5
+
+# Color cycle
+# CC is 0.8 alpha (0.8*255 to hexadecimal)
+# C0 is about 0.75 alpha (0.75*255 to hexadecimal)
+#axes.prop_cycle: cycler('color', ['e41a1c', '377eb8', '4daf4a', '984ea3', 'ff7f00', 'ffff33', 'a65628', 'f781bf', '999999'])
+axes.prop_cycle:      cycler('color', ['e41a1cc0', '377eb8c0', '4daf4ac0', '984ea3c0', 'ff7f00c0', 'ffff33c0', 'a65628c0', 'f781bfc0', '999999c0'])

@@ -9,10 +9,11 @@ using Statistics
 using LinearAlgebra
 using Printf
 using Plots
+using PythonPlot
 using PolygonOps
 using LaTeXStrings
 
-# Include and use the custom Utils module containing ProgressBar[cite: 4]
+# Include and use the custom Utils module containing ProgressBar
 include("utils.jl")
 using .Utils
 
@@ -27,7 +28,8 @@ function train_gp_model(
     train_y::AbstractVector; # Shape: (N,)
     num_epochs::Int = 150,
     lr::Float64 = 0.1,
-    verbose::Bool = false
+    verbose::Bool = false,
+    bar_width::Int = 40
 )
     params_init = (
         mean        = 0.0,
@@ -50,14 +52,29 @@ function train_gp_model(
 
     opt_state = Optimisers.setup(Optimisers.Adam(lr), params_flat)
 
-    for i in 1:num_epochs
-        loss, back = Zygote.pullback(local_loss, params_flat)
-        grad = only(back(1.0))
-        opt_state, params_flat = Optimisers.update(opt_state, params_flat, grad)
+    function execute_training(bar)
+        for i in 1:num_epochs
+            loss, back = Zygote.pullback(local_loss, params_flat)
+            grad = only(back(1.0))
+            opt_state, params_flat = Optimisers.update(opt_state, params_flat, grad)
 
-        if verbose && (i % 25 == 0 || i == 1)
-            println("Epoch $i/$num_epochs - Loss: $(round(loss; digits = 4))")
+            # Yield control so background tasks can update the UI
+            yield()
+
+            if verbose && !isnothing(bar) && (i % 25 == 0)
+                log_msg!(bar, "$(BOLD)$(YELLOW)INFO$(RESET) Epoch $i/$num_epochs Loss: $(round(loss; digits = 4))")
+                update!(bar, 25)
+            end
         end
+    end
+
+    if verbose
+        pbar = ProgressBar(num_epochs; prefix="Training GP", bar_width=bar_width)
+        with_progressbar(pbar) do bar
+            execute_training(bar)
+        end
+    else
+        execute_training(nothing)
     end
 
     optimal_params = ParameterHandling.value(unflatten(params_flat))
@@ -98,11 +115,11 @@ end
 function run_loocv(x_np::Matrix{Float64}, y_np::Vector{Float64}; bar_width::Int = 40)
     n_samples = size(x_np, 1) # Samples are along rows (N, 2)
 
-    println("Running LOOCV validation on $(n_samples) simulation runs...")
+    println("Running LOOCV validation on $n_samples simulation runs...")
     loocv_preds = Float64[]
     loocv_stds = Float64[]
 
-    # Initialize the custom progress bar matching the Python pipeline style[cite: 1, 4]
+    # Initialize the custom progress bar matching the Python pipeline style
     pbar = ProgressBar(n_samples; prefix="Trained models", bar_width=bar_width)
 
     with_progressbar(pbar) do bar
@@ -124,7 +141,9 @@ function run_loocv(x_np::Matrix{Float64}, y_np::Vector{Float64}; bar_width::Int 
             y_tr = (y_tr_raw .- y_mean_f) ./ y_std_f
             X_val = (X_val_raw .- X_min_f) ./ (X_max_f .- X_min_f)
 
-            posterior_gp, _ = train_gp_model(X_tr, y_tr; num_epochs=350, verbose=false)
+            posterior_gp, _ = train_gp_model(
+                X_tr, y_tr; num_epochs=350, verbose=false, bar_width=bar_width
+            )
 
             pred_dist = marginals(posterior_gp(RowVecs(X_val)))
             pred_mean = mean(first(pred_dist))
@@ -136,7 +155,6 @@ function run_loocv(x_np::Matrix{Float64}, y_np::Vector{Float64}; bar_width::Int 
             push!(loocv_preds, exp(pred_mean_log))
             push!(loocv_stds, exp(pred_mean_log) * pred_std_log)
 
-            # Advance the progress bar step[cite: 4]
             update!(bar)
         end
     end
@@ -187,7 +205,7 @@ function run_and_plot_full_model(
     y = (y_np .- y_mean) ./ y_std
 
     posterior_gp, optimal_params = train_gp_model(
-        X, y; num_epochs=350, verbose=true
+        X, y; num_epochs=350, verbose=true, bar_width=bar_width
     )
 
     u10_test = range(5.0, 25.0, length=50)
@@ -244,40 +262,66 @@ function run_and_plot_full_model(
     mean_grid_masked = ifelse.(domain_mask, mean_grid, NaN)
     uncertainty_grid_masked = ifelse.(domain_mask, uncertainty_physical, NaN)
 
-    p1 = contourf(
-        u10_test, fet_test ./ 1000.0, mean_grid_masked,
-        c=:viridis, title="GP Predicted Mean k_nb",
-        xlabel="U_10 [m/s]", ylabel="Fetch [km]"
-    )
-    scatter!(
-        p1, df[!, "U10"], df[!, "Fetch"] ./ 1000.0,
-        color=:red, label="Simulations", legend=:topleft
-    )
+    # Qualified PythonPlot.pyplot.subplots
+    fig, axes = PythonPlot.pyplot.subplots(1, 2, figsize=(12, 5), sharex=true, sharey=true)
 
-    p2 = contourf(
-        u10_test, fet_test ./ 1000.0, uncertainty_grid_masked,
-        c=:magma, title="Prediction Uncertainty (+- 2 sigma)",
-        xlabel="U_10 [m/s]"
+    # Left Plot: Mean Prediction
+    c1 = axes[0].contourf(
+        grid_u10, grid_fet ./ 1000.0, mean_grid_masked, 
+        levels=20, cmap="viridis"
     )
-    scatter!(
-        p2, df[!, "U10"], df[!, "Fetch"] ./ 1000.0,
-        color=:white, label="Simulations", legend=:topleft
+    fig.colorbar(c1, ax=axes[0], label=L"$k_{660}$ [cm/hr]")
+    axes[0].scatter(
+        df[!, "U10"],
+        df[!, "Fetch"] ./ 1000.0,
+        c="red",
+        edgecolors="black",
+        label="Simulations"
     )
+    axes[0].set_title(L"GP Predicted Mean $k_{nb}$")
+    axes[0].set_xlabel(L"$U_{10}$ [m/s]")
+    axes[0].set_ylabel("Fetch [km]")
+    axes[0].legend(loc="upper right")
 
-    fig = plot(p1, p2, layout=(1, 2), size=(1000, 420), plot_title=something(figtitle, ""))
+    # Right Plot: Uncertainty
+    c2 = axes[1].contourf(
+        grid_u10,
+        grid_fet ./ 1000.0,
+        uncertainty_grid_masked, 
+        levels=20,
+        cmap="magma"
+    )
+    fig.colorbar(c2, ax=axes[1], label=L"Uncertainty $\pm 2\sigma$ [cm/hr]")
+    axes[1].scatter(
+        df[!, "U10"],
+        df[!, "Fetch"] ./ 1000.0,
+        c="white",
+        edgecolors="black",
+        label="Simulations"
+    )
+    axes[1].set_title(L"Prediction Uncertainty ($\pm 2\sigma$)")
+    axes[1].set_xlabel(L"$U_{10}$ [m/s]")
+    axes[1].legend(loc="upper right")
+
+    if !isnothing(figtitle)
+        fig.suptitle(figtitle)
+    end
+
+    PythonPlot.tight_layout()
 
     if show_fig
-        display(fig)
+        PythonPlot.plotshow()
     end
 
     if save_fig
         mkpath(out_path)
         for ext in out_exts
             filename = joinpath(out_path, "$(out_name).$(ext)")
-            savefig(fig, filename)
+            fig.savefig(filename, dpi=300)
             println("Saved figure - '$filename'")
         end
     end
+    PythonPlot.pyplot.close(fig)
 end
 
 # ==============================================================================
@@ -285,6 +329,8 @@ end
 # ==============================================================================
 
 function main()
+    PythonPlot.pyplot.style.use("pps_white_grid.mplstyle")
+
     data_path = "/run/media/konmenel/OneTouch/data/DualSPH/Inishmaan"
     old_pwd = pwd()
 
@@ -310,7 +356,7 @@ function main()
         bar_width=BAR_WIDTH,
         figtitle="All Input",
         save_fig=true,
-        out_path="./images/gp",
+        out_path="./images/gp/julia",
         out_name="GP_Unfiltered_Results"
     )
 
