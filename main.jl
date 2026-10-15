@@ -1,21 +1,27 @@
+# GPs
+using Statistics
+using LinearAlgebra
 using AbstractGPs
 using KernelFunctions
 using ParameterHandling
 using Zygote
 using Optimisers
+
+# IO
 using DataFrames
 using CSV
-using Statistics
-using LinearAlgebra
 using Printf
+
+# Proceessing
 using Plots
 using PythonPlot
 using PolygonOps
 using LaTeXStrings
+using Profile
 
 # Include and use the custom Utils module containing ProgressBar
-include("utils.jl")
-using .Utils
+include("progressbar.jl")
+using .Progressbar
 
 const D = 2   # number of input dimensions
 
@@ -26,18 +32,18 @@ const D = 2   # number of input dimensions
 function train_gp_model(
     train_x::AbstractMatrix, # Shape: (N, 2) for N samples and 2 input features
     train_y::AbstractVector; # Shape: (N,)
-    num_epochs::Int = 150,
-    lr::Float64 = 0.1,
-    verbose::Bool = false,
-    bar_width::Int = 40
+    num_epochs::Int=150,
+    lr::Float64=0.1,
+    verbose::Bool=false,
+    bar_width::Int=40
 )
     params_init = (
-        mean        = 0.0,
-        lengthscale = positive(fill(0.693, D)),
-        outputscale = positive(0.693),
-        noise       = positive(0.693, exp, 1e-4),
+        mean=0.0,
+        lengthscale=positive(fill(0.693, D)),
+        outputscale=positive(0.693),
+        noise=positive(0.693, exp, 1e-4),
     )
-    
+
     params_flat_init, unflatten = ParameterHandling.value_flatten(params_init)
     params_flat = copy(params_flat_init)
 
@@ -58,10 +64,8 @@ function train_gp_model(
             grad = only(back(1.0))
             opt_state, params_flat = Optimisers.update(opt_state, params_flat, grad)
 
-            # Yield control so background tasks can update the UI
             yield()
-
-            if verbose && !isnothing(bar) && (i % 25 == 0)
+            if verbose && !isnothing(bar) && (i % 100 == 0)
                 log_msg!(bar, "$(BOLD)$(YELLOW)INFO$(RESET) Epoch $i/$num_epochs Loss: $(round(loss; digits = 4))")
                 update!(bar, 25)
             end
@@ -81,7 +85,7 @@ function train_gp_model(
     trained_k = optimal_params.outputscale * with_lengthscale(Matern52Kernel(), optimal_params.lengthscale)
     trained_f = GP(ConstMean(optimal_params.mean), trained_k)
     trained_gp = posterior(trained_f(RowVecs(train_x), optimal_params.noise), train_y)
-    
+
     return trained_gp, optimal_params
 end
 
@@ -112,18 +116,18 @@ end
 # Leave-One-Out Cross-Validation (LOOCV) with Progress Bar
 # ==============================================================================
 
-function run_loocv(x_np::Matrix{Float64}, y_np::Vector{Float64}; bar_width::Int = 40)
+function run_loocv(x_np::Matrix{Float64}, y_np::Vector{Float64}; bar_width::Int=40)
     n_samples = size(x_np, 1) # Samples are along rows (N, 2)
 
     println("Running LOOCV validation on $n_samples simulation runs...")
-    loocv_preds = Float64[]
-    loocv_stds = Float64[]
+    loocv_preds = Vector{Float64}(undef, n_samples)
+    loocv_stds = Vector{Float64}(undef, n_samples)
 
     # Initialize the custom progress bar matching the Python pipeline style
     pbar = ProgressBar(n_samples; prefix="Trained models", bar_width=bar_width)
 
     with_progressbar(pbar) do bar
-        for i in 1:n_samples
+        Threads.@threads for i in 1:n_samples
             mask = trues(n_samples)
             mask[i] = false
 
@@ -142,7 +146,7 @@ function run_loocv(x_np::Matrix{Float64}, y_np::Vector{Float64}; bar_width::Int 
             X_val = (X_val_raw .- X_min_f) ./ (X_max_f .- X_min_f)
 
             posterior_gp, _ = train_gp_model(
-                X_tr, y_tr; num_epochs=350, verbose=false, bar_width=bar_width
+                X_tr, y_tr; num_epochs=500, verbose=false, bar_width=bar_width
             )
 
             pred_dist = marginals(posterior_gp(RowVecs(X_val)))
@@ -152,8 +156,8 @@ function run_loocv(x_np::Matrix{Float64}, y_np::Vector{Float64}; bar_width::Int 
             pred_mean_log = (pred_mean * y_std_f) + y_mean_f
             pred_std_log = pred_std * y_std_f
 
-            push!(loocv_preds, exp(pred_mean_log))
-            push!(loocv_stds, exp(pred_mean_log) * pred_std_log)
+            loocv_preds[i] = exp(pred_mean_log)
+            loocv_stds[i] = exp(pred_mean_log) * pred_std_log
 
             update!(bar)
         end
@@ -163,11 +167,11 @@ function run_loocv(x_np::Matrix{Float64}, y_np::Vector{Float64}; bar_width::Int 
 
     loocv_mae = mean(abs.(y_np_physical .- loocv_preds))
     loocv_nmae = loocv_mae / (maximum(y_np_physical) - minimum(y_np_physical))
-    loocv_rmse = sqrt(mean((y_np_physical .- loocv_preds).^2))
+    loocv_rmse = sqrt(mean((y_np_physical .- loocv_preds) .^ 2))
     loocv_nrmse = loocv_rmse / (maximum(y_np_physical) - minimum(y_np_physical))
-    
-    ss_res = sum((y_np_physical .- loocv_preds).^2)
-    ss_tot = sum((y_np_physical .- mean(y_np_physical)).^2)
+
+    ss_res = sum((y_np_physical .- loocv_preds) .^ 2)
+    ss_tot = sum((y_np_physical .- mean(y_np_physical)) .^ 2)
     loocv_r2 = 1.0 - (ss_res / ss_tot)
 
     println("\n--- LOOCV Evaluation Metrics ---")
@@ -183,16 +187,37 @@ end
 # ==============================================================================
 
 function run_and_plot_full_model(
-    df::DataFrame,
     x_np::Matrix{Float64},
     y_np::Vector{Float64};
-    bar_width::Int = 40,
-    figtitle::Union{String, Nothing} = nothing,
-    show_fig::Bool = false,
-    save_fig::Bool = true,
-    out_path::String = "./images",
-    out_name::String = "Figure",
-    out_exts::Vector{String} = ["pdf", "png"]
+    bar_width::Int=40,
+    figtitle::Union{String,Nothing}=nothing,
+    show_fig::Bool=false,
+    save_fig::Bool=true,
+    out_path::String="./images",
+    out_name::String="Figure",
+    out_exts::Vector{String}=["pdf", "png"]
+)
+    posterior_gp, optimal_params = run_full_model(x_np, y_np; bar_width=bar_width)
+
+    fig = plot_model(
+        posterior_gp,
+        x_np,
+        y_np;
+        figtitle=figtitle,
+        show_fig=show_fig,
+        save_fig=save_fig,
+        out_path=out_path,
+        out_name=out_name,
+        out_exts=out_exts
+    )
+    PythonPlot.pyplot.close(fig)
+end
+
+function run_full_model(
+    x_np::Matrix{Float64},
+    y_np::Vector{Float64};
+    verbose::Bool=true,
+    bar_width::Int=40,
 )
     println("Training final GP model on full dataset...")
 
@@ -205,15 +230,37 @@ function run_and_plot_full_model(
     y = (y_np .- y_mean) ./ y_std
 
     posterior_gp, optimal_params = train_gp_model(
-        X, y; num_epochs=350, verbose=true, bar_width=bar_width
+        X, y; num_epochs=500, verbose=verbose, bar_width=bar_width
     )
 
+    if verbose
+        println("\n--- Learned Physical Lengthscales ---")
+        @printf("Lengthscale (U10)   : %.4f\n", optimal_params.lengthscale[1])
+        @printf("Lengthscale (Fetch) : %.4f\n", optimal_params.lengthscale[2])
+    end
+
+    return posterior_gp, optimal_params
+end
+
+function plot_model(
+    posterior_gp::AbstractGPs.PosteriorGP,
+    x_np::Matrix{Float64},
+    y_np::Vector{Float64};
+    figtitle::Union{String,Nothing}=nothing,
+    show_fig::Bool=false,
+    save_fig::Bool=true,
+    out_path::String="./images",
+    out_name::String="Figure",
+    out_exts::Vector{String}=["pdf", "png"]
+)
     u10_test = range(5.0, 25.0, length=50)
     fet_test = range(10.0e3, 505.0e3, length=50)
 
     grid_u10 = [u for f in fet_test, u in u10_test]
     grid_fet = [f for f in fet_test, u in u10_test]
 
+    X_min = minimum(x_np, dims=1)
+    X_max = maximum(x_np, dims=1)
     test_pts_raw = hcat(vec(grid_u10), vec(grid_fet))
     test_pts = (test_pts_raw .- X_min) ./ (X_max .- X_min)
 
@@ -221,14 +268,12 @@ function run_and_plot_full_model(
     pred_means = mean.(observed_preds)
     pred_stds = std.(observed_preds)
 
+    y_mean = mean(y_np)
+    y_std = std(y_np)
     mean_log = (pred_means .* y_std) .+ y_mean
     std_log = pred_stds .* y_std
 
     mean_k660 = exp.(mean_log)
-
-    println("\n--- Learned Physical Lengthscales ---")
-    @printf("Lengthscale (U10)   : %.4f\n", optimal_params.lengthscale[1])
-    @printf("Lengthscale (Fetch) : %.4f\n", optimal_params.lengthscale[2])
 
     boundary_pts = [
         (5.0, 10.0 * 1000),
@@ -267,13 +312,16 @@ function run_and_plot_full_model(
 
     # Left Plot: Mean Prediction
     c1 = axes[0].contourf(
-        grid_u10, grid_fet ./ 1000.0, mean_grid_masked, 
-        levels=20, cmap="viridis"
+        grid_u10,
+        grid_fet ./ 1000.0,
+        mean_grid_masked,
+        levels=20,
+        cmap="viridis"
     )
     fig.colorbar(c1, ax=axes[0], label=L"$k_{660}$ [cm/hr]")
     axes[0].scatter(
-        df[!, "U10"],
-        df[!, "Fetch"] ./ 1000.0,
+        x_np[:, 1],
+        x_np[:, 2] ./ 1000.0,
         c="red",
         edgecolors="black",
         label="Simulations"
@@ -287,14 +335,14 @@ function run_and_plot_full_model(
     c2 = axes[1].contourf(
         grid_u10,
         grid_fet ./ 1000.0,
-        uncertainty_grid_masked, 
+        uncertainty_grid_masked,
         levels=20,
         cmap="magma"
     )
     fig.colorbar(c2, ax=axes[1], label=L"Uncertainty $\pm 2\sigma$ [cm/hr]")
     axes[1].scatter(
-        df[!, "U10"],
-        df[!, "Fetch"] ./ 1000.0,
+        x_np[:, 1],
+        x_np[:, 2] ./ 1000.0,
         c="white",
         edgecolors="black",
         label="Simulations"
@@ -310,7 +358,7 @@ function run_and_plot_full_model(
     PythonPlot.tight_layout()
 
     if show_fig
-        PythonPlot.plotshow()
+        PythonPlot.pyplot.plotshow()
     end
 
     if save_fig
@@ -321,7 +369,7 @@ function run_and_plot_full_model(
             println("Saved figure - '$filename'")
         end
     end
-    PythonPlot.pyplot.close(fig)
+    return fig
 end
 
 # ==============================================================================
@@ -349,10 +397,10 @@ function main()
     # ALL POINTS
     # ------------------------------------------------------------------
 
-    run_loocv(X_np, y_np, bar_width=BAR_WIDTH)
+    run_loocv(X_np, y_np; bar_width=BAR_WIDTH)
 
     run_and_plot_full_model(
-        df, X_np, y_np;
+        X_np, y_np;
         bar_width=BAR_WIDTH,
         figtitle="All Input",
         save_fig=true,
@@ -378,10 +426,10 @@ function main()
     X_np_filtered = Matrix{Float64}(df_filtered[:, ["U10", "Fetch"]])
     y_np_filtered = log.(Float64.(df_filtered[:, "k_nb_cm_hr"]))
 
-    run_loocv(X_np_filtered, y_np_filtered, bar_width=BAR_WIDTH)
+    run_loocv(X_np_filtered, y_np_filtered; bar_width=BAR_WIDTH)
 
     run_and_plot_full_model(
-        df_filtered, X_np_filtered, y_np_filtered;
+        X_np_filtered, y_np_filtered;
         bar_width=BAR_WIDTH,
         figtitle="Excluding Bad Input",
         save_fig=true,
@@ -394,5 +442,20 @@ function main()
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
+    function warmup()
+        println("Warming up JIT compiler...")
+        dummy_x = rand(5, 2)
+        dummy_y = rand(5)
+        
+        # Run a miniature training session to force Zygote/AbstractGPs compilation
+        try
+            train_gp_model(dummy_x, dummy_y; num_epochs=5, verbose=false)
+        catch
+            # Catch any errors just in case, though it should run fine
+        end
+        println("Warm-up complete. Starting main pipeline...")
+    end
+    warmup()
+
     main()
 end
