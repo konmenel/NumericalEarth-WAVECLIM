@@ -17,7 +17,6 @@ using Plots
 using PythonPlot
 using PolygonOps
 using LaTeXStrings
-using Profile
 
 # Include and use the custom Utils module containing ProgressBar
 include("progressbar.jl")
